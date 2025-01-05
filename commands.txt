@@ -1,0 +1,117 @@
+aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin <iam-account-id>.dkr.ecr.us-east-2.amazonaws.com
+
+aws ecr create-repository --repository-name llm-action --region us-east-2
+
+docker tag llm-action <iam-account-id>.dkr.ecr.us-east-2.amazonaws.com/llm-action:latest
+
+docker push <iam-account-id>.dkr.ecr.us-east-2.amazonaws.com/llm-action:latest
+
+aws ecs create-cluster --cluster-name llm-action-cluster --region us-east-2
+
+aws ecs register-task-definition \
+    --family llm-actions-task-def \
+    --requires-compatibilities FARGATE \
+    --region us-east-2 \
+    --cpu "1024" \
+    --memory "3072" \
+    --network-mode awsvpc \
+    --runtime-platform '{"operatingSystemFamily": "LINUX", "cpuArchitecture": "ARM64"}' \
+    --execution-role-arn arn:aws:iam::<iam-account-id>:role/ecsTaskExecutionRole \
+    --container-definitions '[
+        {
+            "name": "llm-actions-task-container",
+            "image": "<iam-account-id>.dkr.ecr.us-east-2.amazonaws.com/llm-action:latest",
+            "portMappings": [
+                {
+                    "containerPort": 80,
+                    "hostPort": 80,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true
+        }
+    ]'
+
+aws ecs create-service \
+--region us-east-2 \
+--cluster llm-action-cluster \
+--service-name llm-action-service \
+--task-definition llm-actions-task-def:2 \
+--desired-count 1 \
+--launch-type FARGATE \
+--network-configuration "awsvpcConfiguration={subnets=[$(aws ec2 describe-subnets --filters 'Name=defaultForAz,Values=true' --query 'Subnets[0].SubnetId' --output text)],securityGroups=[$(aws ec2 describe-security-groups --group-names default --query 'SecurityGroups[0].GroupId' --output text)],assignPublicIp=ENABLED}"
+
+aws ecs describe-tasks --cluster llm-action-cluster --tasks <task-id>
+
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-0261472dafd6e9d12 \
+    --protocol tcp \
+    --port 80 \
+    --cidr 0.0.0.0/0
+
+aws ecs create-service \
+    --cluster llm-action-cluster \
+    --service-name llm-action-service \
+    --task-definition llm-actions-task-def:2 \
+    --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={subnets=[$(aws ec2 describe-subnets --filters 'Name=defaultForAz,Values=true' --query 'Subnets[0].SubnetId' --output text)],securityGroups=[$(aws ec2 describe-security-groups --group-names default --query 'SecurityGroups[0].GroupId' --output text)],assignPublicIp=ENABLED}" \
+    --load-balancers "targetGroupArn=arn:aws:elasticloadbalancing:us-east-2:<iam-account-id>:targetgroup/llm-actions-alb-tg/ccfa5f2e57e6f90f,containerName=llm-actions-task-container,containerPort=80" \
+    --desired-count 1 \
+    --region us-east-2
+
+aws ec2 authorize-security-group-ingress \
+    --group-id <security-group> \
+    --protocol tcp \
+    --port 443 \
+    --cidr 0.0.0.0/0
+
+> Domain registered at llmhub.click
+> Cert arn - arn:aws:acm:us-east-2:<iam-account-id>:certificate/fda0f6da-7a72-45e9-8364-25ecb8203130
+> llmhub.click - route 53 hosted zone. (CNAME record created for validation)
+> target group - arn:aws:elasticloadbalancing:us-east-2:<iam-account-id>:targetgroup/llm-actions-alb-tg/ccfa5f2e57e6f90f
+> ALB creation - arn:aws:elasticloadbalancing:us-east-2:<iam-account-id>:loadbalancer/app/llm-actions-alb/ef9733e0b22f88c6
+> Figure out a way to remove the public ip.
+> Retest
+
+Looks like public ip option is expensive (0.5$/hour for a NAT gateway)
+Potential Solutions:
+	1.	Use VPC Endpoints:
+	•	Purpose: Allows private connectivity to AWS services without traversing the internet.
+	•	Implementation:
+	•	Create Interface VPC Endpoints for services your task needs to access (e.g., Amazon ECR, S3).
+	•	Configure Security Groups to permit traffic between your task and the VPC endpoints.
+	•	Limitations: This setup enables access to AWS services but does not provide general internet access.
+	•	Reference: Run Amazon ECS tasks on Fargate in a private subnet
+
+	2.	Implement a NAT Gateway in the Public Subnet:
+	•	Purpose: Allows resources in private subnets to initiate outbound internet connections without exposing them to inbound internet traffic.
+	•	Implementation:
+	•	Create a NAT Gateway in the public subnet.
+	•	Update Route Tables of private subnets to direct outbound internet traffic (0.0.0.0/0) to the NAT Gateway.
+	•	Limitations: Typically, NAT Gateways are used for private subnets. Using them in public subnets is unconventional and may not align with best practices.
+	•	Reference: Connect Amazon ECS applications to the internet
+
+Even with a new VPC, I would still have to pay for a NAT.
+
+Create an encrypted parameter
+
+aws ssm put-parameter \
+    --name "/my-address" \
+    --value "<value>" \
+    --type "SecureString"
+
+aws ssm get-parameter \
+    --name "/my-address" \
+    --with-decryption
+
+
+Modified container definition in the task definition to include a health check 
+ "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost/ || exit 1"],
+        "interval": 300,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+
+And then modified the service.

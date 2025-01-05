@@ -1,0 +1,41 @@
+openapi: 3.1.0
+info:
+  title: Trash Collection Day API
+  description: API to fetch the next trash collection day in my local area as an HTML response.
+  version: 1.0.0
+servers:
+  - url: https://simple-tool.llmhub.click
+paths:
+  /get-next-collection-day:
+    get:
+      operationId: getNextCollectionDay
+      summary: Get Next Trash Collection Day (HTML)
+      description: Fetches the next trash collection day as an HTML response.
+      responses:
+        '200':
+          description: Successful response with the trash collection day and details in HTML format.
+          content:
+            text/html:
+              schema:
+                type: string
+                example: |
+                  <!DOCTYPE html>
+                  <html lang="en">
+                    <head>
+                      <meta charset="UTF-8">
+                      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                      <title>Next trash collection day</title>
+                    </head>
+                    <body>
+                      <p>Next trash collection day | GROOT Aurora</p>
+                      <table>
+                        <tbody>
+                          <tr><td>Thursday, January 9, 1999</td></tr>
+                          <tr><td>Garbage</td></tr>
+                          <tr><td>RecyclingAcceptable itemsFind out how to reuse, recycle or dispose of a waste material.</td></tr>
+                        </tbody>
+                      </table>
+                    </body>
+                  </html>
+        '500':
+          description: Server error or failure to fetch the trash collection day.
